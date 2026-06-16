@@ -9,6 +9,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const errorText = document.getElementById('error-text');
     const retryBtn = document.getElementById('retry-btn');
     const feedContainer = document.getElementById('feed-container');
+    const exportCsvBtn = document.getElementById('export-csv-btn');
+
+    // Theme Toggle Elements
+    const themeToggleBtn = document.getElementById('theme-toggle');
+    const themeIcon = document.getElementById('theme-icon');
 
     // Tweet Modal Elements
     const tweetModal = document.getElementById('tweet-modal');
@@ -19,13 +24,73 @@ document.addEventListener('DOMContentLoaded', () => {
     const cancelTweetBtn = document.getElementById('cancel-tweet-btn');
     const closeModalBtn = document.getElementById('close-modal');
 
+    // Toast Container
+    const toastContainer = document.getElementById('toast-container');
+
     // State
     let releases = [];
     let currentFilter = 'all';
     let searchQuery = '';
 
+    // Toast Notification System
+    function showToast(message, type = 'info') {
+        if (!toastContainer) return;
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        
+        let iconClass = 'fa-circle-info';
+        if (type === 'success') iconClass = 'fa-circle-check';
+        if (type === 'warning') iconClass = 'fa-triangle-exclamation';
+        if (type === 'error') iconClass = 'fa-circle-exclamation';
+        
+        toast.innerHTML = `
+            <i class="fa-solid ${iconClass} toast-icon"></i>
+            <span class="toast-message">${message}</span>
+        `;
+        
+        toastContainer.appendChild(toast);
+        
+        // Remove from DOM after transition finishes
+        setTimeout(() => {
+            toast.style.animation = 'toastFadeOut 0.3s ease forwards';
+            setTimeout(() => {
+                toast.remove();
+            }, 300);
+        }, 4700);
+    }
+
+    // Initialize Theme
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    if (savedTheme === 'light') {
+        document.body.classList.add('light-theme');
+        themeIcon.className = 'fa-solid fa-sun';
+    } else {
+        document.body.classList.remove('light-theme');
+        themeIcon.className = 'fa-solid fa-moon';
+    }
+
+    themeToggleBtn.addEventListener('click', () => {
+        const isLight = document.body.classList.toggle('light-theme');
+        if (isLight) {
+            themeIcon.className = 'fa-solid fa-sun';
+            localStorage.setItem('theme', 'light');
+            showToast('Switched to Light theme', 'info');
+        } else {
+            themeIcon.className = 'fa-solid fa-moon';
+            localStorage.setItem('theme', 'dark');
+            showToast('Switched to Dark theme', 'info');
+        }
+    });
+
     // Fetch releases from API
     async function fetchReleases() {
+        if (!navigator.onLine) {
+            showToast('Cannot fetch updates: you are currently offline.', 'warning');
+            showError('You are offline. Please check your network connection and click Try Again.');
+            setLoading(false);
+            return;
+        }
+
         setLoading(true);
         try {
             const response = await fetch('/api/releases');
@@ -34,9 +99,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             releases = await response.json();
             renderFeed();
+            showToast('Successfully fetched latest BigQuery releases.', 'success');
         } catch (error) {
             console.error('Error fetching release notes:', error);
             showError(error.message || 'Failed to fetch release notes from the server.');
+            showToast('Failed to fetch release notes from the server.', 'error');
         } finally {
             setLoading(false);
         }
@@ -138,8 +205,67 @@ document.addEventListener('DOMContentLoaded', () => {
     function getPlainText(html) {
         const temp = document.createElement('div');
         temp.innerHTML = html;
-        // Clean up some space before links or list items
         return temp.textContent || temp.innerText || "";
+    }
+
+    // Helper to extract filtered items for Export CSV / Filter checking
+    function getFilteredUpdates() {
+        const list = [];
+        releases.forEach(release => {
+            const parsedUpdates = parseReleaseContent(release.content);
+            parsedUpdates.forEach((update, idx) => {
+                // Type Filter
+                if (currentFilter !== 'all' && update.type !== currentFilter) {
+                    return;
+                }
+                // Search Query Filter
+                if (searchQuery) {
+                    const plainText = getPlainText(update.content).toLowerCase();
+                    const titleText = release.title.toLowerCase();
+                    const tagText = update.typeLabel.toLowerCase();
+                    if (!plainText.includes(searchQuery) && !titleText.includes(searchQuery) && !tagText.includes(searchQuery)) {
+                        return;
+                    }
+                }
+                list.push({
+                    date: release.title,
+                    type: update.typeLabel,
+                    content: getPlainText(update.content)
+                });
+            });
+        });
+        return list;
+    }
+
+    // Export current view of releases to a CSV file
+    function exportToCSV() {
+        const filteredList = getFilteredUpdates();
+        if (filteredList.length === 0) {
+            showToast('No data matches the current filters to export.', 'warning');
+            return;
+        }
+
+        let csvRows = [];
+        csvRows.push('"Date","Type","Content"');
+
+        filteredList.forEach(item => {
+            const date = item.date.replace(/"/g, '""');
+            const type = item.type.replace(/"/g, '""');
+            const content = item.content.trim().replace(/\s+/g, ' ').replace(/"/g, '""');
+            csvRows.push(`"${date}","${type}","${content}"`);
+        });
+
+        const csvString = csvRows.join('\n');
+        const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `bigquery_releases_${new Date().toISOString().split('T')[0]}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showToast(`Successfully exported ${filteredList.length} updates to CSV.`, 'success');
     }
 
     // Render the Feed to UI
@@ -203,6 +329,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="update-tag ${update.type}-tag">${update.typeLabel}</span>
                         <div class="update-content">${update.content}</div>
                         <div class="update-footer">
+                            <button class="copy-trigger" data-date="${release.title}" data-index="${idx}">
+                                <i class="fa-regular fa-copy"></i> Copy
+                            </button>
                             <button class="tweet-trigger" data-date="${release.title}" data-index="${idx}">
                                 <i class="fa-brands fa-x-twitter"></i> Tweet Update
                             </button>
@@ -229,6 +358,45 @@ document.addEventListener('DOMContentLoaded', () => {
                     const updateObj = parsed[idx];
                     if (updateObj) {
                         openTweetModal(date, updateObj);
+                    }
+                }
+            });
+        });
+
+        // Add event listeners to the copy buttons
+        document.querySelectorAll('.copy-trigger').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const date = btn.getAttribute('data-date');
+                const idx = parseInt(btn.getAttribute('data-index'), 10);
+                
+                const releaseObj = releases.find(r => r.title === date);
+                if (releaseObj) {
+                    const parsed = parseReleaseContent(releaseObj.content);
+                    const updateObj = parsed[idx];
+                    if (updateObj) {
+                        const plainText = getPlainText(updateObj.content);
+                        const formattedText = `BigQuery Release (${date}) - ${updateObj.typeLabel}:\n${plainText}`;
+                        try {
+                            await navigator.clipboard.writeText(formattedText);
+                            showToast('Copied release note to clipboard!', 'success');
+                            
+                            // Visual feedback on button
+                            const icon = btn.querySelector('i');
+                            const textSpan = btn.childNodes[btn.childNodes.length - 1];
+                            
+                            btn.style.color = 'var(--accent-green)';
+                            icon.className = 'fa-solid fa-check';
+                            textSpan.textContent = ' Copied!';
+                            
+                            setTimeout(() => {
+                                btn.style.color = '';
+                                icon.className = 'fa-regular fa-copy';
+                                textSpan.textContent = ' Copy';
+                            }, 2000);
+                        } catch (err) {
+                            console.error('Failed to copy text: ', err);
+                            showToast('Failed to copy to clipboard.', 'error');
+                        }
                     }
                 }
             });
@@ -262,16 +430,20 @@ document.addEventListener('DOMContentLoaded', () => {
         tweetModal.classList.add('hidden');
     }
 
+    // Update Live Preview Character count
     function updateTweetPreview(text) {
         const len = text.length;
         charCount.textContent = len;
         
-        // Stylize character count based on limits
         charCount.parentElement.className = 'tweet-char-count';
         if (len > 260 && len <= 280) {
             charCount.parentElement.classList.add('warning');
+            postTweetBtn.disabled = false;
         } else if (len > 280) {
             charCount.parentElement.classList.add('danger');
+            postTweetBtn.disabled = true; // Prevent tweeting if over limit
+        } else {
+            postTweetBtn.disabled = false;
         }
         
         tweetPreviewText.textContent = text;
@@ -285,12 +457,13 @@ document.addEventListener('DOMContentLoaded', () => {
     postTweetBtn.addEventListener('click', () => {
         const text = tweetTextarea.value;
         if (text.length > 280) {
-            alert('Your tweet exceeds the 280 character limit.');
+            showToast('Your tweet exceeds the 280 character limit.', 'error');
             return;
         }
         const tweetUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`;
         window.open(tweetUrl, '_blank');
         closeTweetModal();
+        showToast('Redirecting to X / Twitter...', 'info');
     });
 
     cancelTweetBtn.addEventListener('click', closeTweetModal);
@@ -306,6 +479,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Refresh controls
     refreshBtn.addEventListener('click', fetchReleases);
     retryBtn.addEventListener('click', fetchReleases);
+
+    // Export CSV Trigger
+    exportCsvBtn.addEventListener('click', exportToCSV);
 
     // Search input
     searchInput.addEventListener('input', (e) => {
@@ -328,6 +504,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.key === 'Escape' && !tweetModal.classList.contains('hidden')) {
             closeTweetModal();
         }
+    });
+
+    // Online/Offline Listeners
+    window.addEventListener('online', () => {
+        showToast('You are back online. Refreshing release notes...', 'success');
+        fetchReleases();
+    });
+    window.addEventListener('offline', () => {
+        showToast('You are offline. Showing cached information.', 'warning');
     });
 
     // Initial Fetch
